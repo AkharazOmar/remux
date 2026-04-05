@@ -2,13 +2,13 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use prost::Message;
-use crate::video::device_monitor::{
-    DeviceMonitor,
-    video_device::VideoDeviceList,
-    video_device::StreamControl
+use crate::video::video_device::{
+    VideoDeviceList,
+    StreamControl
 };
-use crate::video::streamer::Streamer;
-use crate::com::service::{Service};
+use crate::video::v4l2::device_monitor::DeviceMonitor;
+use crate::video::v4l2::streamer::Streamer;
+use crate::com::service::Service;
 use std::collections::HashMap;
 
 /// Application events
@@ -157,11 +157,11 @@ impl App {
             if message.start {
                 let format = message.format.unwrap();
                 streamer.update_caps(format.format.as_str(), format.width as u32, format.height as u32).await?;
-                if streamer.get_state() != crate::video::streamer::StreamerState::Starting {
+                if streamer.get_state() != crate::video::v4l2::streamer::StreamerState::Starting {
                     streamer.start().await?;
                 }
             } else {
-                if streamer.get_state() == crate::video::streamer::StreamerState::Starting {
+                if streamer.get_state() == crate::video::v4l2::streamer::StreamerState::Starting {
                     streamer.pause().await?;
                 }
             }

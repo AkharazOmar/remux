@@ -4,12 +4,8 @@ use gst::prelude::*;
 use std::sync::{Arc, Mutex};
 use tokio::task;
 
-// Include the generated protobuf code
-pub mod video_device {
-    include!(concat!(env!("OUT_DIR"), "/video_device.rs"));
-}
 
-use video_device::{VideoDevice, VideoDeviceList, VideoFormat, DeviceProperty};
+use crate::video::video_device::{VideoDevice, VideoDeviceList, VideoFormat, DeviceProperty};
 
 #[derive(Clone)]
 pub struct DeviceMonitor {

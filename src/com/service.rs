@@ -39,7 +39,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_video_devices_put() {
         let service = Service::new().await.unwrap();
-        let mut subscriber = service
+        let subscriber = service
             .session
             .declare_subscriber("video/devices")
             .with(FifoChannel::new(1))
@@ -61,7 +61,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_stream_control_subscription() {
         let session = zenoh::open(zenoh::Config::default()).await.unwrap();
-        let mut publisher = session
+        let publisher = session
             .declare_publisher("video/stream_control")
             .await
             .unwrap();

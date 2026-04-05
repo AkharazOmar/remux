@@ -15,14 +15,6 @@ pub enum StreamerState {
     Error(String),
 }
 
-/// Streamer events sent through the event channel
-#[derive(Debug, Clone)]
-pub enum StreamerEvent {
-    StateChanged(StreamerState),
-    EndOfStream,
-    Error(String),
-    BufferAvailable(Vec<u8>),
-}
 
 /// Commands sent to the GStreamer thread
 #[derive(Debug)]

@@ -2,7 +2,11 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use prost::Message;
-use crate::video::device_monitor::{DeviceMonitor, video_device::VideoDeviceList};
+use crate::video::device_monitor::{
+    DeviceMonitor,
+    video_device::VideoDeviceList,
+    video_device::StreamControl
+};
 use crate::video::streamer::Streamer;
 use crate::com::service::{Service};
 use std::collections::HashMap;
@@ -14,10 +18,8 @@ pub enum AppEvent {
     DevicesChanged(VideoDeviceList),
     /// Scan for devices
     ScanDevices,
-    /// Shutdown the application
-    Shutdown,
     /// Handle stream control message
-    stream_control_message(String),
+    StreamControlMessage(StreamControl),
 }
 
 /// Main application structure
@@ -37,26 +39,33 @@ impl App {
 
         // Create Zenoh session
         let service = Service::new().await.unwrap();
-        let mut stream_control_subscriber = service.stream_control_subscriber.clone();
+        let stream_control_subscriber = service.stream_control_subscriber.clone();
         let event_tx_clone = event_tx.clone();
         tokio::spawn(async move {
             while let Ok(sample) = stream_control_subscriber.recv_async().await {
-                // Refer to z_bytes.rs to see how to deserialize different types of message
-                let payload = sample
-                    .payload()
-                    .try_to_string()
-                    .unwrap_or_else(|e| e.to_string().into());
+                let payload = sample.payload().to_bytes();
+                let stream_control = match StreamControl::decode(payload.as_ref()) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        println!("Failed to decode StreamControl message: {}", err);
+                        continue;
+                    }
+                };
 
+                println!(
+                    "Stream Control Message: device_path={}, start={}",
+                    stream_control.device_path,
+                    stream_control.start
+                );
                 println!(
                     ">> [Subscriber] Received {} ('{}': '{}')",
                     sample.kind(),
                     sample.key_expr().as_str(),
-                    payload
+                    String::from_utf8_lossy(payload.as_ref())
                 );
                 let _ = event_tx_clone
-                    .send(AppEvent::stream_control_message(payload.to_string()))
+                    .send(AppEvent::StreamControlMessage(stream_control))
                     .await;
-
             }
         });
         Ok(Self {
@@ -101,12 +110,8 @@ impl App {
                 AppEvent::DevicesChanged(device_list) => {
                     self.handle_devices_changed(device_list).await?;
                 }
-                AppEvent::stream_control_message(buffer) => {
-                    self.stream_control_handler(buffer).await?;
-                }
-                AppEvent::Shutdown => {
-                    println!("Shutting down...");
-                    break;
+                AppEvent::StreamControlMessage(message) => {
+                    self.stream_control_handler(message).await?;
                 }
             }
         }
@@ -148,9 +153,12 @@ impl App {
         Ok(())
     }
     /// Handle stream control messages
-    async fn stream_control_handler(&mut self, buffer: String) -> Result<()> {
-        println!("Received stream control message: {}", buffer);
-        // Here you would parse the buffer and control the streamers accordingly
+    async fn stream_control_handler(&mut self, message: StreamControl) -> Result<()> {
+        println!(
+            "Received stream control message: device_path={}, start={}",
+            message.device_path,
+            message.start
+        );
         Ok(())
     }
 }
@@ -167,11 +175,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_stream_control_subscription() {
-        let mut app = App::new().await;
+        let app = App::new().await;
         assert!(app.is_ok());
         let mut app = app.unwrap();
         let session = app.service.session.clone();
-        let mut publisher = session
+        let publisher = session
             .declare_publisher("video/stream_control")
             .await
             .unwrap();
@@ -179,13 +187,8 @@ mod tests {
             .put("Test Stream Control Message 1".as_bytes().to_vec())
             .await
             .unwrap();
-        tokio::spawn(async move {
-             app.run().await.unwrap();
-        });
 
-        publisher
-            .put("Test Stream Control Message 2".as_bytes().to_vec())
-            .await
-            .unwrap();
+        let receive_result = tokio::time::timeout(Duration::from_millis(200), app.event_rx.recv()).await;
+        assert!(receive_result.is_err(), "invalid stream control message should be ignored");
     }
 }

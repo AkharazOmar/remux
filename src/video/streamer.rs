@@ -31,6 +31,7 @@ enum GstCommand {
     Stop,
     Pause,
     Shutdown,
+    UpdateCaps(gst::Caps),
 }
 
 /// Video streamer using GStreamer
@@ -38,6 +39,8 @@ pub struct Streamer {
     command_tx: mpsc::Sender<GstCommand>,
     state: Arc<Mutex<StreamerState>>,
 }
+
+const CAPSFILTER: &str = "capsfilter";
 
 impl Streamer {
     /// Create a new streamer for a V4L2 device
@@ -140,10 +143,20 @@ impl Streamer {
 
         // Create elements
         let source = gst::ElementFactory::make("v4l2src")
+            .name("source")
             .property("device", device_path)
             .build()
             .map_err(|e| anyhow!("Failed to create v4l2src: {}", e))?;
 
+        let capfilter = gst::ElementFactory::make("capsfilter")
+            .name(CAPSFILTER)
+            .build()
+            .map_err(|e| anyhow!("Failed to create capsfilter: {}", e))?;
+        capfilter.set_property("caps", gst::Caps::builder("video/x-raw")
+            .field("width", 640)
+            .field("height", 480)
+            .build()
+            .to_value()); // "image/jpeg", 1920, 1080
         let convert = gst::ElementFactory::make("videoconvert")
             .build()
             .map_err(|e| anyhow!("Failed to create videoconvert: {}", e))?;
@@ -153,10 +166,10 @@ impl Streamer {
             .map_err(|e| anyhow!("Failed to create autovideosink: {}", e))?;
 
         // Add elements to pipeline
-        pipeline.add_many([&source, &convert, &sink])?;
+        pipeline.add_many([&source, &capfilter, &convert, &sink])?;
 
         // Link elements
-        gst::Element::link_many([&source, &convert, &sink])?;
+        gst::Element::link_many([&source, &capfilter, &convert, &sink])?;
 
         Ok(pipeline)
     }
@@ -222,6 +235,34 @@ impl Streamer {
                         eprintln!("{}", error_msg);
                     }
                 }
+            }
+            GstCommand::UpdateCaps(caps) => {
+                let capsfilter = match pipeline
+                    .by_name(CAPSFILTER)
+                    .and_then(|e| e.dynamic_cast::<gst::Element>().ok())
+                {
+                    Some(elem) => elem,
+                    None => {
+                        eprintln!("Capsfilter element not found in pipeline");
+                        return;
+                    }
+                };
+
+                let caps_supported = pipeline
+                    .by_name("source")
+                    .and_then(|e| e.static_pad("src"))
+                    .map(|pad| pad.query_caps(None).can_intersect(&caps))
+                    .unwrap_or(true);
+
+                if !caps_supported {
+                    eprintln!("Requested caps are not supported by the source, skipping update");
+                    return;
+                }
+
+                capsfilter.set_property("caps", caps.clone());
+                eprintln!("Updated caps on capsfilter");
+
+                let _ = pipeline.send_event(gst::event::Reconfigure::new());
             }
             GstCommand::Shutdown => {
                 let _ = pipeline.set_state(gst::State::Null);
@@ -315,6 +356,25 @@ impl Streamer {
             .map_err(|e| anyhow!("Failed to send pause command: {}", e))
     }
 
+    pub async fn update_caps(&self, format: &str, width: u32, height: u32) -> Result<()> {
+        let mut caps_builder = gst::Caps::builder(format)
+            .field("width", width)
+            .field("height", height);
+
+        if format == "video/x-raw" {
+            caps_builder = caps_builder
+                .field("format", "YUY2")
+                .field("framerate", gst::Fraction::new(30, 1));
+        }
+
+        let caps = caps_builder.build();
+
+        self.command_tx
+            .send(GstCommand::UpdateCaps(caps))
+            .await
+            .map_err(|e| anyhow!("Failed to send update caps command: {}", e))
+    }
+
     /// Get current state
     pub fn get_state(&self) -> StreamerState {
         self.state.lock().unwrap().clone()
@@ -353,6 +413,10 @@ mod tests {
         eprintln!("Starting streamer...");
         let start_result = streamer.start().await;
         assert!(start_result.is_ok());
+
+        sleep(Duration::from_secs(5)).await;
+        let update_caps_result = streamer.update_caps("video/x-raw", 640, 360).await;
+        assert!(update_caps_result.is_ok());
 
         sleep(Duration::from_secs(5)).await;
 

@@ -1,6 +1,8 @@
 use anyhow::Result;
 use gstreamer as gst;
 use gst::prelude::*;
+use std::sync::{Arc, Mutex};
+use tokio::task;
 
 // Include the generated protobuf code
 pub mod video_device {
@@ -9,9 +11,10 @@ pub mod video_device {
 
 use video_device::{VideoDevice, VideoDeviceList, VideoFormat, DeviceProperty};
 
+#[derive(Clone)]
 pub struct VideoDeviceMonitor {
     device_monitor: gst::DeviceMonitor,
-    device_list: VideoDeviceList,
+    last_device_list: Arc<Mutex<Option<VideoDeviceList>>>,
 }
 
 impl VideoDeviceMonitor {
@@ -24,33 +27,45 @@ impl VideoDeviceMonitor {
 
         Ok(Self {
             device_monitor,
-            device_list: VideoDeviceList { devices: vec![] },
+            last_device_list: Arc::new(Mutex::new(None))
         })
     }
 
-    /// Scans for video devices and returns them as a protobuf message
-    pub fn scan_devices(&mut self) -> Result<&VideoDeviceList> {
-        if self.device_list.devices.len() > 0 {
-            return Ok(&self.device_list);
+    /// Scans for video devices and returns them as a protobuf message if changed
+    pub async fn scan_devices(&self) -> Result<Option<VideoDeviceList>> {
+        let device_monitor = self.device_monitor.clone();
+        let last = Arc::clone(&self.last_device_list);
+
+        let device_list = task::spawn_blocking(move || -> Result<VideoDeviceList, anyhow::Error> {
+            device_monitor.start().map_err(|e| anyhow::anyhow!("Failed to start device monitor: {}", e))?;
+
+            // Get the list of devices
+            let raw_devices = device_monitor.devices();
+
+            let mut device_list = VideoDeviceList { devices: vec![] };
+
+            for device in raw_devices {
+                // Assuming parse_device is implemented
+                let video_device = Self::parse_device(&device)?;
+                device_list.devices.push(video_device);
+            }
+
+            device_monitor.stop();
+
+            Ok(device_list)
+        }).await??;
+
+        let mut last_guard = last.lock().unwrap();
+        if *last_guard != Some(device_list.clone()) {
+            *last_guard = Some(device_list.clone());
+            Ok(Some(device_list))
+        } else {
+            Ok(None)
         }
-        // else start scanning
-        self.device_monitor.start().map_err(|e| anyhow::anyhow!("Failed to start device monitor: {}", e))?;
-
-        // Get the list of devices
-        let raw_devices = self.device_monitor.devices();
-
-        for device in raw_devices {
-            let video_device = self.parse_device(&device)?;
-            self.device_list.devices.push(video_device);
-        }
-
-        self.device_monitor.stop();
-
-        Ok(&self.device_list)
     }
 
     /// Parses a GStreamer device into a protobuf VideoDevice
-    fn parse_device(&self, device: &gst::Device) -> Result<VideoDevice> {
+    fn parse_device(device: &gst::Device) -> Result<VideoDevice> {
         let name = device.display_name().to_string();
         let device_class = device.device_class().to_string();
 
@@ -89,7 +104,7 @@ impl VideoDeviceMonitor {
         if let Some(caps) = caps {
             for i in 0..caps.size() {
                 if let Some(structure) = caps.structure(i) {
-                    let format = self.parse_format(&structure);
+                    let format = Self::parse_format(&structure);
                     formats.push(format);
                 }
             }
@@ -105,7 +120,7 @@ impl VideoDeviceMonitor {
     }
 
     /// Parses a GStreamer structure into a VideoFormat
-    fn parse_format(&self, structure: &gst::StructureRef) -> VideoFormat {
+    fn parse_format(structure: &gst::StructureRef) -> VideoFormat {
         let mime_type = structure.name().to_string();
 
         let width = structure
@@ -147,11 +162,12 @@ impl Default for VideoDeviceMonitor {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_scan_devices() {
+    #[tokio::test]
+    async fn test_scan_devices() {
         // FIXME: Use mock devices for testing
-        let mut monitor = VideoDeviceMonitor::new().expect("Failed to create VideoDeviceMonitor");
-        let device_list = monitor.scan_devices().expect("Failed to scan devices");
+        let monitor = VideoDeviceMonitor::new().expect("Failed to create VideoDeviceMonitor");
+        let device_list = monitor.scan_devices().await.expect("Failed to scan devices")
+            .expect("No devices found");
 
         println!("Found {} video device(s):", device_list.devices.len());
         assert_eq!(device_list.devices.len(), 1);

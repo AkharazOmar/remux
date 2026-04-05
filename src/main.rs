@@ -1,10 +1,26 @@
-mod video_device_monitor;
+mod app;
+mod video;
+mod com;
 
-use video_device_monitor::VideoDeviceMonitor;
+use app::App;
 
-fn main() -> anyhow::Result<()> {
-    let mut monitor = VideoDeviceMonitor::new()?;
-    let devices = monitor.scan_devices()?;
-    println!("Detected video devices: {:?}", devices);
+use tokio::signal;
+
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Create and run the application
+    let mut app = App::new().await?;
+
+    // Run the app and wait for Ctrl+C
+    tokio::select! {
+        result = app.run() => {
+            result?;
+        }
+        _ = signal::ctrl_c() => {
+            println!("\nReceived Ctrl+C, shutting down...");
+        }
+    }
+
     Ok(())
 }

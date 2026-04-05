@@ -31,3 +31,10 @@ message VideoDevice {
 message VideoDeviceList {
   repeated VideoDevice devices = 1;
 }
+
+// Order start or stop of video
+message StreamControl {
+  string device_path = 1; // e.g., "/dev/video0"
+  bool start = 2;         // true to start, false to stop
+  VideoFormat format = 3; // Desired video format when starting
+}

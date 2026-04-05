@@ -9,7 +9,6 @@ use std::collections::HashMap;
 
 /// Application events
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum AppEvent {
     /// Device list changed
     DevicesChanged(VideoDeviceList),
@@ -17,6 +16,8 @@ pub enum AppEvent {
     ScanDevices,
     /// Shutdown the application
     Shutdown,
+    /// Handle stream control message
+    stream_control_message(String),
 }
 
 /// Main application structure
@@ -36,6 +37,28 @@ impl App {
 
         // Create Zenoh session
         let service = Service::new().await.unwrap();
+        let mut stream_control_subscriber = service.stream_control_subscriber.clone();
+        let event_tx_clone = event_tx.clone();
+        tokio::spawn(async move {
+            while let Ok(sample) = stream_control_subscriber.recv_async().await {
+                // Refer to z_bytes.rs to see how to deserialize different types of message
+                let payload = sample
+                    .payload()
+                    .try_to_string()
+                    .unwrap_or_else(|e| e.to_string().into());
+
+                println!(
+                    ">> [Subscriber] Received {} ('{}': '{}')",
+                    sample.kind(),
+                    sample.key_expr().as_str(),
+                    payload
+                );
+                let _ = event_tx_clone
+                    .send(AppEvent::stream_control_message(payload.to_string()))
+                    .await;
+
+            }
+        });
         Ok(Self {
             event_tx,
             event_rx,
@@ -77,6 +100,9 @@ impl App {
                 }
                 AppEvent::DevicesChanged(device_list) => {
                     self.handle_devices_changed(device_list).await?;
+                }
+                AppEvent::stream_control_message(buffer) => {
+                    self.stream_control_handler(buffer).await?;
                 }
                 AppEvent::Shutdown => {
                     println!("Shutting down...");
@@ -121,6 +147,12 @@ impl App {
 
         Ok(())
     }
+    /// Handle stream control messages
+    async fn stream_control_handler(&mut self, buffer: String) -> Result<()> {
+        println!("Received stream control message: {}", buffer);
+        // Here you would parse the buffer and control the streamers accordingly
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -131,5 +163,29 @@ mod tests {
     async fn test_app_creation() {
         let app = App::new().await;
         assert!(app.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_stream_control_subscription() {
+        let mut app = App::new().await;
+        assert!(app.is_ok());
+        let mut app = app.unwrap();
+        let session = app.service.session.clone();
+        let mut publisher = session
+            .declare_publisher("video/stream_control")
+            .await
+            .unwrap();
+        publisher
+            .put("Test Stream Control Message 1".as_bytes().to_vec())
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+             app.run().await.unwrap();
+        });
+
+        publisher
+            .put("Test Stream Control Message 2".as_bytes().to_vec())
+            .await
+            .unwrap();
     }
 }

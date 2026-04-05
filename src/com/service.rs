@@ -1,6 +1,7 @@
 pub struct Service {
-    session: zenoh::Session,
+    pub session: zenoh::Session,
     video_device_publisher: zenoh::pubsub::Publisher<'static>,
+    pub stream_control_subscriber: zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
 }
 
 impl Service {
@@ -8,7 +9,13 @@ impl Service {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let session = zenoh::open(zenoh::Config::default()).await.unwrap();
         let video_device_publisher = session.declare_publisher("video/devices").await.unwrap();
-        Ok(Self { session, video_device_publisher })
+        let stream_control_subscriber = session
+            .declare_subscriber("video/stream_control")
+            .with(zenoh::handlers::FifoChannel::new(100))
+            .await
+            .unwrap();
+
+        Ok(Self { session, video_device_publisher, stream_control_subscriber })
     }
 
     pub fn video_devices_put(&self, data: Vec<u8>) -> zenoh::pubsub::PublisherPutBuilder<'_> {
@@ -49,5 +56,18 @@ mod tests {
         assert_eq!(sample.payload().to_bytes().as_ref(), data.as_slice());
 
         subscriber.undeclare().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_stream_control_subscription() {
+        let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+        let mut publisher = session
+            .declare_publisher("video/stream_control")
+            .await
+            .unwrap();
+        publisher
+            .put("Test Stream Control Message".as_bytes().to_vec())
+            .await
+            .unwrap();
     }
 }

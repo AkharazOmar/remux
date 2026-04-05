@@ -3,7 +3,9 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use prost::Message;
 use crate::video::device_monitor::{DeviceMonitor, video_device::VideoDeviceList};
+use crate::video::streamer::Streamer;
 use crate::com::service::{Service};
+use std::collections::HashMap;
 
 /// Application events
 #[derive(Debug, Clone)]
@@ -22,6 +24,7 @@ pub struct App {
     event_tx: mpsc::Sender<AppEvent>,
     event_rx: mpsc::Receiver<AppEvent>,
     device_monitor: DeviceMonitor,
+    streamers: HashMap<String, Streamer>,
     service: Service,
 }
 
@@ -37,6 +40,7 @@ impl App {
             event_tx,
             event_rx,
             device_monitor,
+            streamers: HashMap::new(),
             service,
         })
     }
@@ -94,7 +98,7 @@ impl App {
     }
 
     /// Handle device list changes
-    async fn handle_devices_changed(&self, device_list: VideoDeviceList) -> Result<()> {
+    async fn handle_devices_changed(& mut self, device_list: VideoDeviceList) -> Result<()> {
         println!("\n=== Video Devices Update ===");
         println!("Found {} device(s)\n", device_list.devices.len());
 
@@ -105,6 +109,8 @@ impl App {
             println!("  Class: {}", device.device_class);
             println!("  Formats: {} available", device.formats.len());
             println!();
+            self.streamers.insert(device.device_path.clone(), Streamer::new(&device.device_path).unwrap());
+            self.streamers.get_mut(&device.device_path).unwrap().start().await?;
         }
 
         // Publish to Zenoh

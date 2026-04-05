@@ -57,12 +57,6 @@ impl App {
                     stream_control.device_path,
                     stream_control.start
                 );
-                println!(
-                    ">> [Subscriber] Received {} ('{}': '{}')",
-                    sample.kind(),
-                    sample.key_expr().as_str(),
-                    String::from_utf8_lossy(payload.as_ref())
-                );
                 let _ = event_tx_clone
                     .send(AppEvent::StreamControlMessage(stream_control))
                     .await;
@@ -159,6 +153,21 @@ impl App {
             message.device_path,
             message.start
         );
+        if let Some(streamer) = self.streamers.get_mut(&message.device_path) {
+            if message.start {
+                let format = message.format.unwrap();
+                streamer.update_caps(format.format.as_str(), format.width as u32, format.height as u32).await?;
+                if streamer.get_state() != crate::video::streamer::StreamerState::Starting {
+                    streamer.start().await?;
+                }
+            } else {
+                if streamer.get_state() == crate::video::streamer::StreamerState::Starting {
+                    streamer.pause().await?;
+                }
+            }
+        } else {
+            println!("No streamer found for device path: {}", message.device_path);
+        }
         Ok(())
     }
 }

@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package video_device;
+
+// Represents a video capture format
+message VideoFormat {
+  string mime_type = 1;      // e.g., "video/x-raw", "image/jpeg"
+  int32 width = 2;
+  int32 height = 3;
+  string format = 4;         // e.g., "YUY2", "I420", "MJPG"
+  int32 framerate_num = 5;   // Framerate numerator
+  int32 framerate_den = 6;   // Framerate denominator
+}
+
+// Represents a video device property
+message DeviceProperty {
+  string key = 1;
+  string value = 2;
+}
+
+// Represents a single video device
+message VideoDevice {
+  string name = 1;            // Display name
+  string device_path = 2;     // e.g., "/dev/video0"
+  string device_class = 3;    // e.g., "Video/Source"
+  repeated VideoFormat formats = 4;
+  repeated DeviceProperty properties = 5;
+}
+
+// List of all detected video devices
+message VideoDeviceList {
+  repeated VideoDevice devices = 1;
+}

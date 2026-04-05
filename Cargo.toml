@@ -2,7 +2,19 @@
 name = "remux"
 version = "0.1.0"
 edition = "2024"
+authors = ["Omar AKHARAZ <omar.akharaz@gmail.com>"]
+description = "A Rust-based video device monitoring library using GStreamer and Protocol Buffers"
+license = "FIXME"
+repository = "https://FIXME"
+keywords = ["video", "camera", "v4l2", "gstreamer", "protobuf"]
+categories = ["multimedia::video", "hardware-support"]
 
 [dependencies]
 gstreamer = "0.24.4"
+prost = "0.14.1"
+bytes = "1.9.0"
 zenoh = "1.7.1"
+anyhow = "1.0"
+
+[build-dependencies]
+prost-build = "0.14.1"

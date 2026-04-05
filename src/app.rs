@@ -2,7 +2,7 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use prost::Message;
-use crate::video::video_device_monitor::{VideoDeviceMonitor, video_device::VideoDeviceList};
+use crate::video::device_monitor::{DeviceMonitor, video_device::VideoDeviceList};
 use crate::com::service::{Service};
 
 /// Application events
@@ -21,7 +21,7 @@ pub enum AppEvent {
 pub struct App {
     event_tx: mpsc::Sender<AppEvent>,
     event_rx: mpsc::Receiver<AppEvent>,
-    device_monitor: VideoDeviceMonitor,
+    device_monitor: DeviceMonitor,
     service: Service,
 }
 
@@ -29,7 +29,7 @@ impl App {
     /// Create a new application instance
     pub async fn new() -> Result<Self> {
         let (event_tx, event_rx) = mpsc::channel(100);
-        let device_monitor = VideoDeviceMonitor::new()?;
+        let device_monitor = DeviceMonitor::new()?;
 
         // Create Zenoh session
         let service = Service::new().await.unwrap();

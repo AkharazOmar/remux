@@ -12,12 +12,12 @@ pub mod video_device {
 use video_device::{VideoDevice, VideoDeviceList, VideoFormat, DeviceProperty};
 
 #[derive(Clone)]
-pub struct VideoDeviceMonitor {
+pub struct DeviceMonitor {
     device_monitor: gst::DeviceMonitor,
     last_device_list: Arc<Mutex<Option<VideoDeviceList>>>,
 }
 
-impl VideoDeviceMonitor {
+impl DeviceMonitor {
     /// Creates a new VideoDeviceMonitor instance
     pub fn new() -> Result<Self> {
         gst::init()?;
@@ -152,7 +152,7 @@ impl VideoDeviceMonitor {
     }
 }
 
-impl Default for VideoDeviceMonitor {
+impl Default for DeviceMonitor {
     fn default() -> Self {
         Self::new().expect("Failed to create VideoDeviceMonitor")
     }
@@ -165,7 +165,7 @@ mod tests {
     #[tokio::test]
     async fn test_scan_devices() {
         // FIXME: Use mock devices for testing
-        let monitor = VideoDeviceMonitor::new().expect("Failed to create VideoDeviceMonitor");
+        let monitor = DeviceMonitor::new().expect("Failed to create VideoDeviceMonitor");
         let device_list = monitor.scan_devices().await.expect("Failed to scan devices")
             .expect("No devices found");
 

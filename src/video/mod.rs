@@ -1,1 +1,1 @@
-pub mod video_device_monitor;
+pub mod device_monitor;

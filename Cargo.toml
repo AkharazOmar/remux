@@ -1,0 +1,8 @@
+[package]
+name = "remux"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gstreamer = "0.24.4"
+zenoh = "1.7.1"

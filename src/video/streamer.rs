@@ -4,7 +4,6 @@ use gst::prelude::*;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-use crate::video::rtsp::pipeline;
 
 
 /// Streamer states
@@ -341,7 +340,7 @@ impl Streamer {
     }
 }
 
-pub fn create_decode_sink_chain(pipeline: &gst::Pipeline) -> Result<(gst::Element)> {
+pub fn create_decode_sink_chain(pipeline: &gst::Pipeline) -> Result<gst::Element > {
     let decobin = gst::ElementFactory::make("decodebin")
         .build()
         .map_err(|e| anyhow!("Failed to create decodebin: {}", e))?;

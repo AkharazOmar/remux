@@ -2,12 +2,13 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use prost::Message;
+use crate::video::v4l2::pipeline::V4L2Pipeline;
 use crate::video::video_device::{
     VideoDeviceList,
     StreamControl
 };
 use crate::video::v4l2::device_monitor::DeviceMonitor;
-use crate::video::v4l2::streamer::Streamer;
+use crate::video::streamer::Streamer;
 use crate::com::service::Service;
 use std::collections::HashMap;
 
@@ -134,7 +135,7 @@ impl App {
             println!("  Class: {}", device.device_class);
             println!("  Formats: {} available", device.formats.len());
             println!();
-            self.streamers.insert(device.device_path.clone(), Streamer::new(&device.device_path).unwrap());
+            self.streamers.insert(device.device_path.clone(), Streamer::new(V4L2Pipeline{device_path: device.device_path.clone()}).unwrap());
             self.streamers.get_mut(&device.device_path).unwrap().start().await?;
         }
 
@@ -157,11 +158,11 @@ impl App {
             if message.start {
                 let format = message.format.unwrap();
                 streamer.update_caps(format.format.as_str(), format.width as u32, format.height as u32).await?;
-                if streamer.get_state() != crate::video::v4l2::streamer::StreamerState::Starting {
+                if streamer.get_state() != crate::video::streamer::StreamerState::Starting {
                     streamer.start().await?;
                 }
             } else {
-                if streamer.get_state() == crate::video::v4l2::streamer::StreamerState::Starting {
+                if streamer.get_state() == crate::video::streamer::StreamerState::Starting {
                     streamer.pause().await?;
                 }
             }

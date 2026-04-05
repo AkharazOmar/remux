@@ -1,2 +1,2 @@
 pub mod device_monitor;
-pub mod streamer;
+pub mod pipeline;

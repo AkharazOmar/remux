@@ -32,21 +32,24 @@ pub struct Streamer {
     state: Arc<Mutex<StreamerState>>,
 }
 
-const CAPSFILTER: &str = "capsfilter";
+pub const CAPSFILTER: &str = "capsfilter";
+
+pub trait PipelineFactory: Send + 'static{
+    fn create_pipeline(&self) -> Result<gst::Pipeline>;
+}
 
 impl Streamer {
     /// Create a new streamer for a V4L2 device
-    pub fn new(device_path: &str) -> Result<Self> {
+    pub fn new(factory: impl PipelineFactory) -> Result<Self> {
         let state = Arc::new(Mutex::new(StreamerState::Stopped));
         let (command_tx, command_rx) = mpsc::channel::<GstCommand>(32);
 
         // Clone for the GStreamer thread
-        let device_path = device_path.to_string();
         let state_clone = Arc::clone(&state);
 
         // Spawn dedicated GStreamer thread
         std::thread::spawn(move || {
-            Self::gstreamer_thread(device_path, command_rx, state_clone);
+            Self::gstreamer_thread(factory, command_rx, state_clone);
         });
 
         Ok(Self {
@@ -57,7 +60,7 @@ impl Streamer {
 
     /// GStreamer thread - handles all GStreamer operations
     fn gstreamer_thread(
-        device_path: String,
+        factory: impl PipelineFactory,
         command_rx: mpsc::Receiver<GstCommand>,
         state: Arc<Mutex<StreamerState>>,
     ) {
@@ -72,7 +75,7 @@ impl Streamer {
         let main_loop_clone = main_loop.clone();
 
         // Create pipeline
-        let pipeline = match Self::create_pipeline(&device_path) {
+        let pipeline = match factory.create_pipeline() {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Failed to create pipeline: {}", e);
@@ -127,71 +130,6 @@ impl Streamer {
 
         // Cleanup
         let _ = pipeline.set_state(gst::State::Null);
-    }
-
-    /// Create the GStreamer pipeline
-    fn create_pipeline(device_path: &str) -> Result<gst::Pipeline> {
-        let pipeline = gst::Pipeline::new();
-
-        // Create elements
-        let source = gst::ElementFactory::make("v4l2src")
-            .name("source")
-            .property("device", device_path)
-            .build()
-            .map_err(|e| anyhow!("Failed to create v4l2src: {}", e))?;
-
-        let capfilter = gst::ElementFactory::make("capsfilter")
-            .name(CAPSFILTER)
-            .build()
-            .map_err(|e| anyhow!("Failed to create capsfilter: {}", e))?;
-
-        let decobin = gst::ElementFactory::make("decodebin")
-            .build()
-            .map_err(|e| anyhow!("Failed to create decodebin: {}", e))?;
-
-        let videoconvert = gst::ElementFactory::make("videoconvert")
-            .build()
-            .map_err(|e| anyhow!("Failed to create videoconvert: {}", e))?;
-
-        let sink = gst::ElementFactory::make("autovideosink")
-            .build()
-            .map_err(|e| anyhow!("Failed to create autovideosink: {}", e))?;
-
-        // Add elements to pipeline
-        pipeline.add_many([&source, &capfilter, &decobin, &videoconvert, &sink])?;
-
-        // Link elements
-        gst::Element::link_many([&source, &capfilter, &decobin])?;
-        gst::Element::link_many([&videoconvert, &sink])?;
-
-        let videoconvert_weak = videoconvert.downgrade();
-        decobin.connect_pad_added(move |_dbin, src_pad| {
-            let Some(videoconvert) = videoconvert_weak.upgrade() else {
-                return;
-            };
-            let sink_pad = videoconvert.static_pad("sink").expect("Failed to get sink pad from videoconvert");
-            if sink_pad.is_linked() {
-                eprintln!("Sink pad already linked, ignoring");
-                return;
-            }
-
-            let src_pad_caps = src_pad.current_caps().or_else(|| Some(src_pad.query_caps(None)));
-            let Some(src_pad_caps) = src_pad_caps else {
-                eprintln!("Failed to get caps from src pad");
-                return;
-            };
-            let Some(src_pad_struct) = src_pad_caps.structure(0) else {return;};
-            let src_pad_type = src_pad_struct.name();
-
-            if src_pad_type.starts_with("video/") {
-                match src_pad.link(&sink_pad) {
-                    Ok(_) => eprintln!("Linked decodebin src pad to videoconvert sink pad"),
-                    Err(e) => eprintln!("Failed to link decodebin src pad to videoconvert sink pad: {}", e),
-                }
-            }
-        });
-
-        Ok(pipeline)
     }
 
     /// Handle a command from the command channel

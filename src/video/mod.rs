@@ -4,3 +4,5 @@ pub mod video_device {
 }
 
 pub mod v4l2;
+pub mod rtsp;
+pub mod streamer;

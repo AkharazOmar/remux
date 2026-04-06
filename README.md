@@ -1,20 +1,22 @@
 # Remux
 
-A Rust-based video device monitoring library that uses GStreamer to detect and enumerate V4L2 cameras, with Protocol Buffers for structured data representation.
+A Rust-based video device manager that discovers, monitors, and streams from V4L2 and RTSP cameras. Uses GStreamer for video pipelines and Zenoh for distributed pub/sub communication, enabling remote control and distribution of video streams across a network.
 
 ## Features
 
-- **V4L2 Camera Detection**: Automatically discovers all video capture devices using GStreamer's device monitor
-- **Format Enumeration**: Lists all supported video formats, resolutions, and framerates for each camera
-- **Device Properties**: Extracts detailed device metadata (driver, bus info, capabilities, etc.)
-- **Protocol Buffers**: Structured data representation for easy serialization and cross-platform compatibility
-- **Type-Safe**: Leverages Rust's type system for reliable camera enumeration
+- **V4L2 Camera Detection**: Automatically discovers local video capture devices with periodic scanning
+- **RTSP Camera Support**: Connects to network IP cameras via RTSP (configurable protocol TCP/UDP)
+- **Extensible Pipeline Architecture**: Trait-based `PipelineFactory` design for easy addition of new camera types
+- **Distributed Communication**: Publishes device information and receives stream control commands via Zenoh
+- **Configuration File**: TOML-based configuration for RTSP cameras
+- **Shell Completions**: Auto-generated bash/zsh/fish completions via `--completions`
+- **Protocol Buffers**: Structured serialization for device metadata and stream control messages
 
 ## Requirements
 
 - Rust 2024 edition or later
 - GStreamer 1.0 development libraries
-- V4L2 compatible system (Linux)
+- Linux (V4L2 support)
 
 ### System Dependencies
 
@@ -35,173 +37,117 @@ sudo pacman -S gstreamer gst-plugins-base
 
 ## Installation
 
-Clone the repository:
 ```bash
 git clone <repository-url>
 cd remux
-```
-
-Build the project:
-```bash
 cargo build --release
 ```
 
 ## Usage
 
-### Running the Example
+### Basic Usage
 
-To scan and display all detected video devices:
+Start with V4L2 camera auto-detection only:
 ```bash
-cargo run
+remux
 ```
 
-### Using as a Library
+### With RTSP Cameras
 
-Add to your `Cargo.toml`:
+```bash
+remux --config /path/to/config.toml
+```
+
+If no `--config` is provided, remux looks for `/etc/remux/config.toml`. If the file doesn't exist, only V4L2 cameras are used.
+
+### Configuration File
+
 ```toml
-[dependencies]
-remux = { path = "/path/to/remux" }
+[[rtsp]]
+name = "Camera Entrance"
+uri = "rtsp://admin:password@192.168.1.23/cam/realmonitor?channel=1&subtype=0"
+protocol = "tcp"
+
+[[rtsp]]
+name = "Camera Parking"
+uri = "rtsp://admin:password@192.168.1.24/stream1"
+# protocol defaults to "udp"
 ```
 
-Example code:
-```rust
-use remux::video_device_monitor::VideoDeviceMonitor;
+### Shell Completions
 
-fn main() -> anyhow::Result<()> {
-    // Create a video device monitor
-    let monitor = VideoDeviceMonitor::new()?;
-
-    // Scan for devices
-    let device_list = monitor.scan_devices()?;
-
-    // Access device information
-    for device in device_list.devices {
-        println!("Camera: {}", device.name);
-        println!("Path: {}", device.device_path);
-
-        for format in device.formats {
-            println!("  Format: {}x{} {} @ {}fps",
-                format.width,
-                format.height,
-                format.format,
-                format.framerate_num / format.framerate_den.max(1)
-            );
-        }
-    }
-
-    Ok(())
-}
+```bash
+remux --completions bash > /etc/bash_completion.d/remux
+remux --completions zsh > ~/.zfunc/_remux
+remux --completions fish > ~/.config/fish/completions/remux.fish
 ```
 
-## Project Structure
+## Architecture
 
 ```
-remux/
-├── src/
-│   ├── main.rs                    # Example application
-│   ├── video_device_monitor.rs    # Core monitoring logic
-│   └── video-device.proto         # Protocol Buffer definitions
-├── build.rs                       # Build script for protobuf compilation
-├── Cargo.toml                     # Project dependencies
-└── README.md                      # This file
+src/
+├── main.rs                     # CLI entry point (clap)
+├── app.rs                      # Event loop and application orchestration
+├── config.rs                   # TOML configuration parsing
+├── video/
+│   ├── mod.rs                  # Shared protobuf types
+│   ├── streamer.rs             # Generic Streamer + PipelineFactory trait
+│   ├── v4l2/
+│   │   ├── device_monitor.rs   # GStreamer V4L2 device scanning
+│   │   └── pipeline.rs         # V4L2 pipeline (v4l2src)
+│   └── rtsp/
+│       └── pipeline.rs         # RTSP pipeline (rtspsrc)
+├── com/
+│   └── service.rs              # Zenoh pub/sub service
+└── video-device.proto          # Protobuf schema
 ```
 
-## Protocol Buffer Schema
+### Data Flow
 
-The project uses Protocol Buffers to represent video device information:
+1. **V4L2**: `DeviceMonitor` scans for local cameras every 5 seconds
+2. **RTSP**: Cameras are loaded from the configuration file at startup
+3. **Streaming**: Each camera gets a dedicated `Streamer` thread with its own GStreamer pipeline
+4. **Zenoh**: Device lists are published to `video/devices`, stream control commands are received on `video/stream_control`
 
-### VideoDevice
-- `name`: Display name of the camera
-- `device_path`: System path (e.g., `/dev/video0`)
-- `device_class`: Device class (typically "Video/Source")
-- `formats`: List of supported video formats
-- `properties`: Device-specific properties
+## Zenoh Topics
 
-### VideoFormat
-- `mime_type`: MIME type (e.g., "video/x-raw", "image/jpeg")
-- `width`: Video width in pixels
-- `height`: Video height in pixels
-- `format`: Pixel format (e.g., "YUY2", "MJPG", "I420")
-- `framerate_num`: Framerate numerator
-- `framerate_den`: Framerate denominator
-
-### DeviceProperty
-- `key`: Property name
-- `value`: Property value as string
-
-## API Documentation
-
-### VideoDeviceMonitor
-
-#### `new() -> Result<Self>`
-Creates a new video device monitor instance. Initializes GStreamer and sets up device filtering for V4L2 cameras.
-
-#### `scan_devices(&self) -> Result<VideoDeviceList>`
-Scans the system for available video devices and returns a structured list of all detected cameras with their capabilities.
+| Topic                  | Direction | Description                                    |
+|------------------------|-----------|------------------------------------------------|
+| `video/devices`        | Publish   | Protobuf-encoded list of detected V4L2 devices |
+| `video/stream_control` | Subscribe | Start/stop/configure individual streams        |
 
 ## Dependencies
 
-- **gstreamer** (0.24.4): GStreamer bindings for Rust
-- **prost** (0.14.1): Protocol Buffers implementation
-- **bytes** (1.9.0): Byte buffer utilities
-- **anyhow** (1.0): Error handling
-- **zenoh** (1.7.1): Zero-overhead pub/sub networking (for future features)
-
-### Build Dependencies
-- **prost-build** (0.14.1): Protocol Buffer compiler
-
-## Example Output
-
-```
-Scanning for video devices...
-
-Found 1 video device(s):
-
-Device #1
-  Name: Laptop Webcam Module (2nd Gen) (V4L2)
-  Path: /dev/video0
-  Class: Video/Source
-  Formats:
-    - image/jpeg 1920x1080 unknown (30fps)
-    - image/jpeg 1280x720 unknown (30fps)
-    - video/x-raw 640x480 YUY2 (30fps)
-  Properties:
-    - api.v4l2.path: /dev/video0
-    - device.api: v4l2
-    - api.v4l2.cap.driver: uvcvideo
-    ...
-```
-
-## Future Features
-
-- [ ] Real-time device hotplug detection
-- [ ] Camera capability testing
-- [ ] Video streaming over Zenoh
-- [ ] Remote camera access
-- [ ] Multi-camera synchronization
-- [ ] Format conversion utilities
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-[Add your license here]
+| Crate        | Purpose                        |
+|--------------|--------------------------------|
+| gstreamer    | Video pipeline management      |
+| zenoh        | Distributed pub/sub messaging  |
+| prost        | Protocol Buffers serialization |
+| clap         | CLI argument parsing           |
+| serde + toml | Configuration file parsing     |
+| tokio        | Async runtime                  |
 
 ## Troubleshooting
 
-### No devices detected
-- Ensure V4L2 devices exist: `ls -la /dev/video*`
-- Check GStreamer installation: `gst-inspect-1.0 v4l2src`
-- Verify user permissions: You may need to be in the `video` group
+### No V4L2 devices detected
+- Check devices exist: `ls -la /dev/video*`
+- Verify GStreamer: `gst-inspect-1.0 v4l2src`
+- Check permissions: user may need to be in the `video` group
+
+### RTSP camera not connecting
+- Test with ffplay: `ffplay -rtsp_transport tcp rtsp://user:pass@ip/path`
+- Try `protocol = "tcp"` in config (UDP may be blocked by firewalls/VPNs)
 
 ### Build errors
 - Install GStreamer development packages (see Requirements)
 - Update Rust: `rustup update`
 
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
 ## See Also
 
 - [GStreamer Documentation](https://gstreamer.freedesktop.org/documentation/)
-- [Protocol Buffers](https://developers.google.com/protocol-buffers)
-- [V4L2 API](https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/v4l2.html)
+- [Zenoh Documentation](https://zenoh.io/docs/)
+- [gst-plugin-zenoh](https://github.com/p13marc/gst-plugin-zenoh) - GStreamer plugin for streaming via Zenoh

@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use prost::Message;
 use crate::video::v4l2::pipeline::V4L2Pipeline;
+use crate::video::rtsp::pipeline::RtspPipeline;
 use crate::video::video_device::{
     VideoDeviceList,
     StreamControl
@@ -11,6 +12,9 @@ use crate::video::v4l2::device_monitor::DeviceMonitor;
 use crate::video::streamer::Streamer;
 use crate::com::service::Service;
 use std::collections::HashMap;
+
+use crate::config::Config;
+
 
 /// Application events
 #[derive(Debug, Clone)]
@@ -28,13 +32,18 @@ pub struct App {
     event_tx: mpsc::Sender<AppEvent>,
     event_rx: mpsc::Receiver<AppEvent>,
     device_monitor: DeviceMonitor,
-    streamers: HashMap<String, Streamer>,
+    v4l2_streamers: HashMap<String, Streamer>,
+    rtsp_streamers: HashMap<String, Streamer>,
     service: Service,
 }
 
 impl App {
     /// Create a new application instance
-    pub async fn new() -> Result<Self> {
+    pub async fn new(config_path: Option<&str>) -> Result<Self> {
+        let config = match config_path {
+            Some(path) => Config::load_from_file(std::path::Path::new(path))?,
+            None => Config::default(),
+        };
         let (event_tx, event_rx) = mpsc::channel(100);
         let device_monitor = DeviceMonitor::new()?;
 
@@ -63,11 +72,18 @@ impl App {
                     .await;
             }
         });
+        let mut rtsp_streamers = HashMap::new();
+        for camera in &config.rtsp {
+            eprintln!("Configuring RTSP camera: name={}, uri={}, protocol={}", camera.name, camera.uri, camera.protocol);
+            let pipeline = RtspPipeline { name: camera.name.clone(), url: camera.uri.clone(), protocol: camera.protocol.clone()};
+            rtsp_streamers.insert(camera.name.clone(), Streamer::new(pipeline)?);
+        }
         Ok(Self {
             event_tx,
             event_rx,
             device_monitor,
-            streamers: HashMap::new(),
+            v4l2_streamers: HashMap::new(),
+            rtsp_streamers,
             service,
         })
     }
@@ -80,6 +96,12 @@ impl App {
     /// Run the application event loop
     pub async fn run(&mut self) -> Result<()> {
         println!("Starting Remux application...");
+
+        // Start RTSP streamers
+        for (name, streamer) in &self.rtsp_streamers {
+            eprintln!("Starting RTSP streamer: {}", name);
+            streamer.start().await?;
+        }
 
         // Initial device scan
         self.scan_devices().await?;
@@ -135,8 +157,8 @@ impl App {
             println!("  Class: {}", device.device_class);
             println!("  Formats: {} available", device.formats.len());
             println!();
-            self.streamers.insert(device.device_path.clone(), Streamer::new(V4L2Pipeline{device_path: device.device_path.clone()}).unwrap());
-            self.streamers.get_mut(&device.device_path).unwrap().start().await?;
+            self.v4l2_streamers.insert(device.device_path.clone(), Streamer::new(V4L2Pipeline{device_path: device.device_path.clone()}).unwrap());
+            self.v4l2_streamers.get_mut(&device.device_path).unwrap().start().await?;
         }
 
         // Publish to Zenoh
@@ -154,7 +176,7 @@ impl App {
             message.device_path,
             message.start
         );
-        if let Some(streamer) = self.streamers.get_mut(&message.device_path) {
+        if let Some(streamer) = self.v4l2_streamers.get_mut(&message.device_path) {
             if message.start {
                 let format = message.format.unwrap();
                 streamer.update_caps(format.format.as_str(), format.width as u32, format.height as u32).await?;
@@ -179,13 +201,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_app_creation() {
-        let app = App::new().await;
+        let app = App::new(None).await;
         assert!(app.is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_stream_control_subscription() {
-        let app = App::new().await;
+        let app = App::new(None).await;
         assert!(app.is_ok());
         let mut app = app.unwrap();
         let session = app.service.session.clone();

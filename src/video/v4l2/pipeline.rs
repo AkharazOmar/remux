@@ -10,8 +10,12 @@ pub struct V4L2Pipeline {
 }
 
 impl PipelineFactory for V4L2Pipeline {
+    fn name(&self) -> &str {
+        &self.device_path
+    }
+
     fn create_pipeline(&self) -> Result<gst::Pipeline> {
-        let pipeline = gst::Pipeline::new();
+        let pipeline = gst::Pipeline::with_name(&self.device_path);
 
         // Create elements
         let source = gst::ElementFactory::make("v4l2src")
@@ -25,7 +29,7 @@ impl PipelineFactory for V4L2Pipeline {
             .build()
             .map_err(|e| anyhow!("Failed to create capsfilter: {}", e))?;
 
-        let decodebin = create_decode_sink_chain(&pipeline)?;
+        let decodebin = create_decode_sink_chain(&pipeline, &self.device_path)?;
         // Add elements to pipeline
         pipeline.add_many([&source, &capfilter])?;
         

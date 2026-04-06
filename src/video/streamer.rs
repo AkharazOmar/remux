@@ -35,7 +35,8 @@ pub struct Streamer {
 
 pub const CAPSFILTER: &str = "capsfilter";
 
-pub trait PipelineFactory: Send + 'static{
+pub trait PipelineFactory: Send + 'static {
+    fn name(&self) -> &str;
     fn create_pipeline(&self) -> Result<gst::Pipeline>;
 }
 
@@ -71,10 +72,6 @@ impl Streamer {
             return;
         }
 
-        // Create main loop with default context
-        let main_loop = glib::MainLoop::new(None, false);
-        let main_loop_clone = main_loop.clone();
-
         // Create pipeline
         let pipeline = match factory.create_pipeline() {
             Ok(p) => p,
@@ -84,50 +81,65 @@ impl Streamer {
             }
         };
 
-        // Set up bus watch
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        // Set up bus watch (thread-safe version)
         let _bus_watch = if let Some(bus) = pipeline.bus() {
             let state_clone = Arc::clone(&state);
-            let main_loop_for_bus = main_loop_clone.clone();
+            let running_clone = Arc::clone(&running);
 
-            Some(
-                bus.add_watch_local(move |_, msg| {
-                    Self::handle_bus_message(
-                        msg,
-                        &state_clone,
-                        &main_loop_for_bus,
-                    )
-                })
-                .expect("Failed to add bus watch"),
-            )
+            Some(bus.add_watch(move |_, msg| {
+                use gst::MessageView;
+                match msg.view() {
+                    MessageView::Eos(..) => {
+                        eprintln!("End-Of-Stream reached");
+                        running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+                        glib::ControlFlow::Break
+                    }
+                    MessageView::Error(err) => {
+                        let error_msg = format!(
+                            "Error from {:?}: {} ({:?})",
+                            err.src().map(|s| s.path_string()),
+                            err.error(),
+                            err.debug()
+                        );
+                        eprintln!("GStreamer error: {}", error_msg);
+                        {
+                            let mut state_guard = state_clone.lock().unwrap();
+                            *state_guard = StreamerState::Error(error_msg);
+                        }
+                        running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+                        glib::ControlFlow::Break
+                    }
+                    MessageView::Warning(warning) => {
+                        eprintln!(
+                            "Warning from {:?}: {} ({:?})",
+                            warning.src().map(|s| s.path_string()),
+                            warning.error(),
+                            warning.debug()
+                        );
+                        glib::ControlFlow::Continue
+                    }
+                    _ => glib::ControlFlow::Continue,
+                }
+            })
+            .expect("Failed to add bus watch"))
         } else {
             None
         };
 
-        // Set up command receiver using idle callback
-        let command_rx = Arc::new(std::sync::Mutex::new(command_rx));
-        let pipeline_clone = pipeline.clone();
-        let state_clone = Arc::clone(&state);
-
-        glib::idle_add_local(move || {
-            let cmd = {
-                let mut rx = command_rx.lock().unwrap();
-                rx.try_recv().ok()
-            };
-
-            if let Some(cmd) = cmd {
-                Self::handle_command(
-                    &cmd,
-                    &pipeline_clone,
-                    &state_clone,
-                    &main_loop_clone,
-                );
+        // Command loop — poll for commands while running
+        let mut command_rx = command_rx;
+        while running.load(std::sync::atomic::Ordering::SeqCst) {
+            match command_rx.try_recv() {
+                Ok(cmd) => {
+                    Self::handle_command(&cmd, &pipeline, &state, &running);
+                }
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
             }
-
-            glib::ControlFlow::Continue
-        });
-
-        // Run the main loop
-        main_loop.run();
+        }
 
         // Cleanup
         let _ = pipeline.set_state(gst::State::Null);
@@ -138,7 +150,7 @@ impl Streamer {
         cmd: &GstCommand,
         pipeline: &gst::Pipeline,
         state: &Arc<Mutex<StreamerState>>,
-        main_loop: &glib::MainLoop,
+        running: &Arc<std::sync::atomic::AtomicBool>,
     ) {
         match cmd {
             GstCommand::Start => {
@@ -225,7 +237,7 @@ impl Streamer {
             }
             GstCommand::Shutdown => {
                 let _ = pipeline.set_state(gst::State::Null);
-                main_loop.quit();
+                running.store(false, std::sync::atomic::Ordering::SeqCst);
             }
         }
     }
@@ -340,7 +352,7 @@ impl Streamer {
     }
 }
 
-pub fn create_decode_sink_chain(pipeline: &gst::Pipeline) -> Result<gst::Element > {
+pub fn create_decode_sink_chain(pipeline: &gst::Pipeline, _title: &str) -> Result<gst::Element> {
     let decobin = gst::ElementFactory::make("decodebin")
         .build()
         .map_err(|e| anyhow!("Failed to create decodebin: {}", e))?;
@@ -350,6 +362,7 @@ pub fn create_decode_sink_chain(pipeline: &gst::Pipeline) -> Result<gst::Element
         .map_err(|e| anyhow!("Failed to create videoconvert: {}", e))?;
 
     let sink = gst::ElementFactory::make("autovideosink")
+        .property_from_str("name", _title)
         .build()
         .map_err(|e| anyhow!("Failed to create autovideosink: {}", e))?;
 

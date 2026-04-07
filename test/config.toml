@@ -1,0 +1,8 @@
+[[rtsp]]
+name = "Test Camera 1"
+uri = "rtsp://admin:pass@192.168.1.10/stream1"
+protocol = "tcp"
+
+[[rtsp]]
+name = "Test Camera 2"
+uri = "rtsp://admin:pass@192.168.1.20/stream1"

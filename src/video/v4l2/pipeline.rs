@@ -39,3 +39,25 @@ impl PipelineFactory for V4L2Pipeline {
         Ok(pipeline)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_v4l2_pipeline_name() {
+        let pipeline = V4L2Pipeline { device_path: "/dev/video0".to_string() };
+        assert_eq!(pipeline.name(), "/dev/video0");
+    }
+
+    #[test]
+    fn test_v4l2_pipeline_creation() {
+        gst::init().unwrap();
+        let factory = V4L2Pipeline { device_path: "/dev/video99".to_string() };
+        let pipeline = factory.create_pipeline();
+        assert!(pipeline.is_ok());
+        let pipeline = pipeline.unwrap();
+        assert!(pipeline.by_name("source").is_some());
+        assert!(pipeline.by_name(CAPSFILTER).is_some());
+    }
+}

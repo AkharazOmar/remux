@@ -199,10 +199,31 @@ impl App {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_app_creation() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_app_creation_without_config() {
         let app = App::new(None).await;
         assert!(app.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_app_creation_with_valid_config() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(file, r#"
+[[rtsp]]
+name = "Test Camera"
+uri = "rtsp://localhost/stream"
+protocol = "tcp"
+"#).unwrap();
+
+        let app = App::new(Some(file.path().to_str().unwrap())).await;
+        assert!(app.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_app_creation_with_invalid_config() {
+        let result = App::new(Some("/nonexistent/config.toml")).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

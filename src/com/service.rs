@@ -30,7 +30,7 @@ mod tests {
     use super::*;
     use zenoh::handlers::FifoChannel;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_service_creation() {
         let service = Service::new().await;
         assert!(service.is_ok());

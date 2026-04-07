@@ -70,3 +70,44 @@ impl PipelineFactory for RtspPipeline {
         Ok(pipeline)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rtsp_pipeline_name() {
+        let pipeline = RtspPipeline {
+            name: "Test Camera".to_string(),
+            url: "rtsp://localhost/stream".to_string(),
+            protocol: "tcp".to_string(),
+        };
+        assert_eq!(pipeline.name(), "Test Camera");
+    }
+
+    #[test]
+    fn test_rtsp_pipeline_creation() {
+        gst::init().unwrap();
+        let factory = RtspPipeline {
+            name: "Test Camera".to_string(),
+            url: "rtsp://localhost/stream".to_string(),
+            protocol: "tcp".to_string(),
+        };
+        let pipeline = factory.create_pipeline();
+        assert!(pipeline.is_ok());
+        let pipeline = pipeline.unwrap();
+        assert!(pipeline.by_name("source").is_some());
+    }
+
+    #[test]
+    fn test_rtsp_pipeline_protocol_udp() {
+        gst::init().unwrap();
+        let factory = RtspPipeline {
+            name: "UDP Camera".to_string(),
+            url: "rtsp://localhost/stream".to_string(),
+            protocol: "udp".to_string(),
+        };
+        let pipeline = factory.create_pipeline();
+        assert!(pipeline.is_ok());
+    }
+}

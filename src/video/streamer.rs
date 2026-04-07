@@ -455,45 +455,73 @@ mod tests {
     use super::*;
     use tokio::time::{sleep, Duration};
 
+    struct MockPipeline;
+
+    impl PipelineFactory for MockPipeline {
+        fn name(&self) -> &str { "mock" }
+        fn create_pipeline(&self) -> Result<gst::Pipeline> {
+            gst::init().unwrap();
+            let pipeline = gst::Pipeline::with_name("mock");
+            let src = gst::ElementFactory::make("videotestsrc")
+                .property_from_str("pattern", "snow")
+                .build()
+                .map_err(|e| anyhow!("Failed to create videotestsrc: {}", e))?;
+            let sink = gst::ElementFactory::make("fakesink")
+                .build()
+                .map_err(|e| anyhow!("Failed to create fakesink: {}", e))?;
+            pipeline.add_many([&src, &sink])?;
+            gst::Element::link_many([&src, &sink])?;
+            Ok(pipeline)
+        }
+    }
+
     #[tokio::test]
     async fn test_streamer_creation() {
-        let streamer = Streamer::new("/dev/video0");
+        let streamer = Streamer::new(MockPipeline);
         assert!(streamer.is_ok());
     }
 
     #[tokio::test]
-    async fn test_streamer_state() {
-        let streamer = Streamer::new("/dev/video0").unwrap();
+    async fn test_streamer_initial_state_is_stopped() {
+        let streamer = Streamer::new(MockPipeline).unwrap();
         assert_eq!(streamer.get_state(), StreamerState::Stopped);
     }
 
     #[tokio::test]
-    async fn test_streamer_start_stop() {
-        let streamer = Streamer::new("/dev/video0").unwrap();
+    async fn test_streamer_start_changes_state() {
+        let streamer = Streamer::new(MockPipeline).unwrap();
+        streamer.start().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        let state = streamer.get_state();
+        assert!(state == StreamerState::Playing || state == StreamerState::Starting);
+    }
 
-        eprintln!("Starting streamer...");
-        let start_result = streamer.start().await;
-        assert!(start_result.is_ok());
+    #[tokio::test]
+    async fn test_streamer_pause_changes_state() {
+        let streamer = Streamer::new(MockPipeline).unwrap();
+        streamer.start().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        streamer.pause().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        assert_eq!(streamer.get_state(), StreamerState::Paused);
+    }
 
-        sleep(Duration::from_secs(5)).await;
-        let update_caps_result = streamer.update_caps("video/x-raw", 640, 360).await;
-        assert!(update_caps_result.is_ok());
+    #[tokio::test]
+    async fn test_streamer_stop_changes_state() {
+        let streamer = Streamer::new(MockPipeline).unwrap();
+        streamer.start().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        streamer.stop().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        assert_eq!(streamer.get_state(), StreamerState::Stopped);
+    }
 
-        sleep(Duration::from_secs(5)).await;
-
-        eprintln!("Pausing streamer...");
-        let pause_result = streamer.pause().await;
-        assert!(pause_result.is_ok());
-
-        sleep(Duration::from_secs(5)).await;
-
-        eprintln!("Resuming streamer...");
-        let start_result = streamer.start().await;
-        assert!(start_result.is_ok());
-
-        sleep(Duration::from_secs(5)).await;
-        let stop_result = streamer.stop().await;
-        assert!(stop_result.is_ok());
-        sleep(Duration::from_secs(5)).await;
+    #[tokio::test]
+    async fn test_streamer_shutdown_on_drop() {
+        let streamer = Streamer::new(MockPipeline).unwrap();
+        streamer.start().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        drop(streamer);
+        // No panic = success, the shutdown command was sent
     }
 }

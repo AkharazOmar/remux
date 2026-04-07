@@ -397,6 +397,51 @@ pub fn create_decode_sink_chain(pipeline: &gst::Pipeline, _title: &str) -> Resul
     Ok(decobin)
 }
 
+pub fn create_audio_sink_chain(pipeline: &gst::Pipeline) -> Result<gst::Element> {
+    let decobin = gst::ElementFactory::make("decodebin")
+        .name("audio_decobin")
+        .build()
+        .map_err(|e| anyhow!("Failed to create audio decodebin: {}", e))?;
+
+    let audioconvert = gst::ElementFactory::make("audioconvert")
+        .build()
+        .map_err(|e| anyhow!("Failed to create audioconvert: {}", e))?;
+
+    let sink = gst::ElementFactory::make("autoaudiosink")
+        .build()
+        .map_err(|e| anyhow!("Failed to create autoaudiosink: {}", e))?;
+
+    pipeline.add_many([&decobin, &audioconvert, &sink])?;
+    gst::Element::link_many([&audioconvert, &sink])?;
+
+    let audioconvert_weak = audioconvert.downgrade();
+    decobin.connect_pad_added(move |_, src_pad| {
+        let Some(audioconvert) = audioconvert_weak.upgrade() else { return; };
+        let sink_pad = audioconvert.static_pad("sink").expect("Failed to get sink pad from audioconvert");
+        if sink_pad.is_linked() {
+            eprintln!("Sink pad already linked, ignoring");
+            return;
+        }
+
+        let src_pad_caps = src_pad.current_caps().or_else(|| Some(src_pad.query_caps(None)));
+        let Some(src_pad_caps) = src_pad_caps else {
+            eprintln!("Failed to get caps from src pad");
+            return;
+        };
+        let Some(src_pad_struct) = src_pad_caps.structure(0) else {return;};
+        let src_pad_type = src_pad_struct.name();
+
+        if src_pad_type.starts_with("audio/") {
+            match src_pad.link(&sink_pad) {
+                Ok(_) => eprintln!("Linked decodebin src pad to audioconvert sink pad"),
+                Err(e) => eprintln!("Failed to link decodebin src pad to audioconvert sink pad: {}", e),
+            }
+        }
+    });
+
+    Ok(decobin)
+}
+
 impl Drop for Streamer {
     fn drop(&mut self) {
         // Send shutdown command to GStreamer thread

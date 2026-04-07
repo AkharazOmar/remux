@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use gstreamer as gst;
 use gst::prelude::*;
-use crate::video::streamer::{PipelineFactory, create_decode_sink_chain};
+use crate::video::streamer::{PipelineFactory, create_audio_sink_chain, create_decode_sink_chain};
 
 
 pub struct RtspPipeline {
@@ -27,14 +27,13 @@ impl PipelineFactory for RtspPipeline {
             .map_err(|e| anyhow!("Failed to create rtspsrc: {}", e))?;
 
         let decodebin = create_decode_sink_chain(&pipeline, &self.name)?;
-
+        let audio_decodebin = create_audio_sink_chain(&pipeline)?;
         pipeline.add(&source)?;
 
         // rtspsrc has dynamic pads — link to decodebin when pad appears
         let decodebin_weak = decodebin.downgrade();
+        let audio_decobin_weak = audio_decodebin.downgrade();
         source.connect_pad_added(move |_, src_pad| {
-            let Some(decodebin) = decodebin_weak.upgrade() else { return };
-
             // Only link video pads
             let caps = match src_pad.current_caps().or_else(|| Some(src_pad.query_caps(None))) {
                 Some(c) => c,
@@ -46,15 +45,25 @@ impl PipelineFactory for RtspPipeline {
             }
             // Check media type is video
             if let Ok(media) = structure.get::<String>("media") {
-                if media != "video" {
-                    return;
+                match media.as_str() {
+                    "video" => {
+                        let Some(decodebin) = decodebin_weak.upgrade() else { return };
+                        let sink_pad = decodebin.static_pad("sink").expect("Failed to get decodebin sink pad");
+                        if sink_pad.is_linked() { return; }
+                        if let Err(err) = src_pad.link(&sink_pad) {
+                            eprintln!("Failed to link rtspsrc to decodebin: {}", err);
+                        }
+                    }
+                    "audio" => {
+                        let Some(audio_decodebin) = audio_decobin_weak.upgrade() else { return };
+                        let sink_pad = audio_decodebin.static_pad("sink").expect("Failed to get audio decodebin sink pad");
+                        if sink_pad.is_linked() { return; }
+                        if let Err(err) = src_pad.link(&sink_pad) {
+                            eprintln!("Failed to link rtspsrc audio pad to audio decodebin: {}", err);
+                        }
+                    }
+                    _ => {}
                 }
-            }
-
-            let sink_pad = decodebin.static_pad("sink").expect("Failed to get decodebin sink pad");
-            if sink_pad.is_linked() { return; }
-            if let Err(err) = src_pad.link(&sink_pad) {
-                eprintln!("Failed to link rtspsrc to decodebin: {}", err);
             }
         });
 

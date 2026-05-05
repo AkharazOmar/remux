@@ -110,4 +110,33 @@ mod tests {
         let pipeline = factory.create_pipeline();
         assert!(pipeline.is_ok());
     }
+
+    #[test]
+    fn test_rtsp_pipeline_has_decodebin() {
+        gst::init().unwrap();
+        let factory = RtspPipeline {
+            name: "Decode Test".to_string(),
+            url: "rtsp://localhost/stream".to_string(),
+            protocol: "tcp".to_string(),
+        };
+        let pipeline = factory.create_pipeline().unwrap();
+        // Pipeline should contain the audio decodebin
+        assert!(pipeline.by_name("audio_decobin").is_some());
+    }
+
+    #[test]
+    fn test_rtsp_pipeline_source_properties() {
+        gst::init().unwrap();
+        let factory = RtspPipeline {
+            name: "Props Test".to_string(),
+            url: "rtsp://192.168.1.100/stream".to_string(),
+            protocol: "tcp".to_string(),
+        };
+        let pipeline = factory.create_pipeline().unwrap();
+        let source = pipeline.by_name("source").unwrap();
+        let location: String = source.property("location");
+        assert_eq!(location, "rtsp://192.168.1.100/stream");
+        let latency: u32 = source.property("latency");
+        assert_eq!(latency, 200);
+    }
 }

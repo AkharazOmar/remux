@@ -198,6 +198,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gstreamer::prelude::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_app_creation_without_config() {
@@ -243,5 +244,168 @@ protocol = "tcp"
 
         let receive_result = tokio::time::timeout(Duration::from_millis(200), app.event_rx.recv()).await;
         assert!(receive_result.is_err(), "invalid stream control message should be ignored");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_event_sender() {
+        let app = App::new(None).await.unwrap();
+        let sender = app.event_sender();
+        let result = sender.send(AppEvent::ScanDevices).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_handle_devices_changed_empty_list() {
+        let mut app = App::new(None).await.unwrap();
+        let device_list = VideoDeviceList { devices: vec![] };
+        let result = app.handle_devices_changed(device_list).await;
+        assert!(result.is_ok());
+        assert!(app.v4l2_streamers.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_stream_control_handler_unknown_device() {
+        let mut app = App::new(None).await.unwrap();
+        let message = StreamControl {
+            device_path: "/dev/video99".to_string(),
+            start: true,
+            format: None,
+        };
+        // Should not error, just print "No streamer found"
+        let result = app.stream_control_handler(message).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_stream_control_handler_stop_unknown_device() {
+        let mut app = App::new(None).await.unwrap();
+        let message = StreamControl {
+            device_path: "/dev/video99".to_string(),
+            start: false,
+            format: None,
+        };
+        let result = app.stream_control_handler(message).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_scan_devices() {
+        let app = App::new(None).await.unwrap();
+        let result = app.scan_devices().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_app_creation_with_multiple_rtsp() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(file, r#"
+[[rtsp]]
+name = "Camera 1"
+uri = "rtsp://localhost/stream1"
+protocol = "tcp"
+
+[[rtsp]]
+name = "Camera 2"
+uri = "rtsp://localhost/stream2"
+"#).unwrap();
+
+        let app = App::new(Some(file.path().to_str().unwrap())).await;
+        assert!(app.is_ok());
+        let app = app.unwrap();
+        assert_eq!(app.rtsp_streamers.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_stream_control_start_with_existing_v4l2_streamer() {
+        use crate::video::streamer::PipelineFactory;
+        use crate::video::video_device::VideoFormat;
+
+        struct FakePipeline;
+        impl PipelineFactory for FakePipeline {
+            fn name(&self) -> &str { "fake" }
+            fn create_pipeline(&self) -> anyhow::Result<gstreamer::Pipeline> {
+                gstreamer::init().unwrap();
+                let pipeline = gstreamer::Pipeline::with_name("fake-v4l2");
+                let src = gstreamer::ElementFactory::make("videotestsrc")
+                    .name("source")
+                    .build().unwrap();
+                let capsfilter = gstreamer::ElementFactory::make("capsfilter")
+                    .name(crate::video::streamer::CAPSFILTER)
+                    .build().unwrap();
+                let sink = gstreamer::ElementFactory::make("fakesink").build().unwrap();
+                pipeline.add_many([&src, &capsfilter, &sink]).unwrap();
+                gstreamer::Element::link_many([&src, &capsfilter, &sink]).unwrap();
+                Ok(pipeline)
+            }
+        }
+
+        let mut app = App::new(None).await.unwrap();
+        let device_path = "/dev/video_fake".to_string();
+        app.v4l2_streamers.insert(device_path.clone(), Streamer::new(FakePipeline).unwrap());
+
+        // Start with format
+        let message = StreamControl {
+            device_path: device_path.clone(),
+            start: true,
+            format: Some(VideoFormat {
+                mime_type: String::new(),
+                format: "video/x-raw".to_string(),
+                width: 640,
+                height: 480,
+                framerate_num: 30,
+                framerate_den: 1,
+            }),
+        };
+        let result = app.stream_control_handler(message).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_stream_control_stop_with_existing_v4l2_streamer() {
+        use crate::video::streamer::PipelineFactory;
+
+        struct FakePipeline;
+        impl PipelineFactory for FakePipeline {
+            fn name(&self) -> &str { "fake" }
+            fn create_pipeline(&self) -> anyhow::Result<gstreamer::Pipeline> {
+                gstreamer::init().unwrap();
+                let pipeline = gstreamer::Pipeline::with_name("fake-v4l2-stop");
+                let src = gstreamer::ElementFactory::make("videotestsrc").build().unwrap();
+                let sink = gstreamer::ElementFactory::make("fakesink").build().unwrap();
+                pipeline.add_many([&src, &sink]).unwrap();
+                gstreamer::Element::link_many([&src, &sink]).unwrap();
+                Ok(pipeline)
+            }
+        }
+
+        let mut app = App::new(None).await.unwrap();
+        let device_path = "/dev/video_fake_stop".to_string();
+        app.v4l2_streamers.insert(device_path.clone(), Streamer::new(FakePipeline).unwrap());
+
+        // Start first so we have a Starting state
+        let start_msg = StreamControl {
+            device_path: device_path.clone(),
+            start: true,
+            format: Some(crate::video::video_device::VideoFormat {
+                mime_type: String::new(),
+                format: "video/x-raw".to_string(),
+                width: 640,
+                height: 480,
+                framerate_num: 30,
+                framerate_den: 1,
+            }),
+        };
+        app.stream_control_handler(start_msg).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Stop
+        let stop_msg = StreamControl {
+            device_path: device_path.clone(),
+            start: false,
+            format: None,
+        };
+        let result = app.stream_control_handler(stop_msg).await;
+        assert!(result.is_ok());
     }
 }

@@ -1,0 +1,29 @@
+# [[rtsp]]
+# name = "Camera entrepot"
+# uri = "rtsp://admin:Msl7akh6-@192.168.1.22/cam/realmonitor?channel=1&subtype=0"
+# protocol = "tcp"
+# 
+# [[rtsp]]
+# name = "Camera couloir"
+# uri = "rtsp://admin:Msl7akh6-@192.168.1.23/cam/realmonitor?channel=1&subtype=0"
+# protocol = "tcp"
+
+[[rtsp]]
+name = "Camera exterieur 1"
+uri = "rtsp://admin:Msl7akh6-@192.168.1.25/cam/realmonitor?channel=1&subtype=0"
+protocol = "tcp"
+
+[[rtsp]]
+name = "Camera exterieur 2"
+uri = "rtsp://admin:Msl7akh6-@192.168.1.25/cam/realmonitor?channel=2&subtype=0"
+protocol = "tcp"
+
+# [[rtsp]]
+# name = "Camera 2"
+# uri = "rtsp://admin:Msl7akh6-@192.168.1.108/cam/realmonitor?channel=1&subtype=0"
+# protocol = "tcp"
+# 
+# [[rtsp]]
+# name = "Camera 3"
+# uri = "rtsp://admin:Msl7akh6-@192.168.1.135/cam/realmonitor?channel=1&subtype=0"
+# protocol = "tcp"

@@ -524,4 +524,295 @@ mod tests {
         drop(streamer);
         // No panic = success, the shutdown command was sent
     }
+
+    #[tokio::test]
+    async fn test_streamer_update_caps() {
+        let streamer = Streamer::new(MockPipeline).unwrap();
+        streamer.start().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        // MockPipeline has no capsfilter, so command is sent but ignored gracefully
+        let result = streamer.update_caps("video/x-raw", 640, 480).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_streamer_update_caps_with_mjpeg() {
+        let streamer = Streamer::new(MockPipeline).unwrap();
+        streamer.start().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        let result = streamer.update_caps("image/jpeg", 1920, 1080).await;
+        assert!(result.is_ok());
+    }
+
+    // Direct tests for handle_command
+    fn create_test_pipeline() -> gst::Pipeline {
+        gst::init().unwrap();
+        let pipeline = gst::Pipeline::with_name("test");
+        let src = gst::ElementFactory::make("videotestsrc").build().unwrap();
+        let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        pipeline.add_many([&src, &sink]).unwrap();
+        gst::Element::link_many([&src, &sink]).unwrap();
+        pipeline
+    }
+
+    fn create_test_pipeline_with_capsfilter() -> gst::Pipeline {
+        gst::init().unwrap();
+        let pipeline = gst::Pipeline::with_name("test-caps");
+        let src = gst::ElementFactory::make("videotestsrc")
+            .name("source")
+            .build().unwrap();
+        let capsfilter = gst::ElementFactory::make("capsfilter")
+            .name(CAPSFILTER)
+            .build().unwrap();
+        let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        pipeline.add_many([&src, &capsfilter, &sink]).unwrap();
+        gst::Element::link_many([&src, &capsfilter, &sink]).unwrap();
+        pipeline
+    }
+
+    #[test]
+    fn test_handle_command_start() {
+        let pipeline = create_test_pipeline();
+        let state = Arc::new(Mutex::new(StreamerState::Stopped));
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        Streamer::handle_command(&GstCommand::Start, &pipeline, &state, &running);
+        assert_eq!(*state.lock().unwrap(), StreamerState::Playing);
+    }
+
+    #[test]
+    fn test_handle_command_stop() {
+        let pipeline = create_test_pipeline();
+        let state = Arc::new(Mutex::new(StreamerState::Playing));
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        Streamer::handle_command(&GstCommand::Stop, &pipeline, &state, &running);
+        assert_eq!(*state.lock().unwrap(), StreamerState::Stopped);
+    }
+
+    #[test]
+    fn test_handle_command_pause() {
+        let pipeline = create_test_pipeline();
+        let state = Arc::new(Mutex::new(StreamerState::Stopped));
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        Streamer::handle_command(&GstCommand::Start, &pipeline, &state, &running);
+        Streamer::handle_command(&GstCommand::Pause, &pipeline, &state, &running);
+        assert_eq!(*state.lock().unwrap(), StreamerState::Paused);
+    }
+
+    #[test]
+    fn test_handle_command_shutdown() {
+        let pipeline = create_test_pipeline();
+        let state = Arc::new(Mutex::new(StreamerState::Playing));
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        Streamer::handle_command(&GstCommand::Shutdown, &pipeline, &state, &running);
+        assert!(!running.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_handle_command_update_caps_no_capsfilter() {
+        let pipeline = create_test_pipeline();
+        let state = Arc::new(Mutex::new(StreamerState::Playing));
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        let caps = gst::Caps::builder("video/x-raw")
+            .field("width", 640)
+            .field("height", 480)
+            .build();
+        // Should not panic when capsfilter is missing
+        Streamer::handle_command(&GstCommand::UpdateCaps(caps), &pipeline, &state, &running);
+    }
+
+    #[test]
+    fn test_handle_command_update_caps_with_capsfilter() {
+        let pipeline = create_test_pipeline_with_capsfilter();
+        let state = Arc::new(Mutex::new(StreamerState::Stopped));
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        Streamer::handle_command(&GstCommand::Start, &pipeline, &state, &running);
+
+        let caps = gst::Caps::builder("video/x-raw")
+            .field("width", 640)
+            .field("height", 480)
+            .build();
+        Streamer::handle_command(&GstCommand::UpdateCaps(caps), &pipeline, &state, &running);
+        // Verify capsfilter was updated
+        let capsfilter = pipeline.by_name(CAPSFILTER).unwrap();
+        let applied_caps: gst::Caps = capsfilter.property("caps");
+        assert!(!applied_caps.is_any());
+    }
+
+    #[test]
+    fn test_handle_command_update_caps_unsupported() {
+        let pipeline = create_test_pipeline_with_capsfilter();
+        let state = Arc::new(Mutex::new(StreamerState::Stopped));
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        Streamer::handle_command(&GstCommand::Start, &pipeline, &state, &running);
+
+        // Request caps that videotestsrc doesn't support
+        let caps = gst::Caps::builder("audio/x-raw")
+            .field("rate", 44100i32)
+            .build();
+        Streamer::handle_command(&GstCommand::UpdateCaps(caps), &pipeline, &state, &running);
+        // capsfilter should NOT be updated since caps are unsupported
+        let capsfilter = pipeline.by_name(CAPSFILTER).unwrap();
+        let applied_caps: gst::Caps = capsfilter.property("caps");
+        assert!(applied_caps.is_any());
+    }
+
+    #[test]
+    fn test_handle_bus_message_eos() {
+        gst::init().unwrap();
+        let state = Arc::new(Mutex::new(StreamerState::Playing));
+        let main_loop = glib::MainLoop::new(None, false);
+
+        let msg = gst::message::Eos::new();
+        let result = Streamer::handle_bus_message(&msg, &state, &main_loop);
+        assert_eq!(result, glib::ControlFlow::Break);
+    }
+
+    #[test]
+    fn test_handle_bus_message_error() {
+        gst::init().unwrap();
+        let state = Arc::new(Mutex::new(StreamerState::Playing));
+        let main_loop = glib::MainLoop::new(None, false);
+
+        let msg = gst::message::Error::new(gst::CoreError::Failed, "test error");
+        let result = Streamer::handle_bus_message(&msg, &state, &main_loop);
+        assert_eq!(result, glib::ControlFlow::Break);
+        match &*state.lock().unwrap() {
+            StreamerState::Error(msg) => assert!(msg.contains("test error")),
+            other => panic!("Expected Error state, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_handle_bus_message_warning() {
+        gst::init().unwrap();
+        let state = Arc::new(Mutex::new(StreamerState::Playing));
+        let main_loop = glib::MainLoop::new(None, false);
+
+        let msg = gst::message::Warning::new(gst::CoreError::Failed, "test warning");
+        let result = Streamer::handle_bus_message(&msg, &state, &main_loop);
+        assert_eq!(result, glib::ControlFlow::Continue);
+        // State should remain unchanged
+        assert_eq!(*state.lock().unwrap(), StreamerState::Playing);
+    }
+
+    #[test]
+    fn test_handle_bus_message_other() {
+        gst::init().unwrap();
+        let state = Arc::new(Mutex::new(StreamerState::Playing));
+        let main_loop = glib::MainLoop::new(None, false);
+
+        // Create a generic message (StreamStart)
+        let pipeline = gst::Pipeline::with_name("test-msg");
+        let msg = gst::message::Latency::new();
+        let result = Streamer::handle_bus_message(&msg, &state, &main_loop);
+        assert_eq!(result, glib::ControlFlow::Continue);
+        let _ = pipeline;
+    }
+
+    #[test]
+    fn test_handle_bus_message_state_changed() {
+        gst::init().unwrap();
+        let state = Arc::new(Mutex::new(StreamerState::Playing));
+        let main_loop = glib::MainLoop::new(None, false);
+
+        let pipeline = create_test_pipeline();
+        // Trigger a state change to generate a StateChanged message
+        pipeline.set_state(gst::State::Playing).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let bus = pipeline.bus().unwrap();
+        // Drain bus messages looking for a StateChanged
+        while let Some(msg) = bus.pop() {
+            if matches!(msg.view(), gst::MessageView::StateChanged(_)) {
+                let result = Streamer::handle_bus_message(&msg, &state, &main_loop);
+                assert_eq!(result, glib::ControlFlow::Continue);
+                pipeline.set_state(gst::State::Null).unwrap();
+                return;
+            }
+        }
+        pipeline.set_state(gst::State::Null).unwrap();
+        // If no StateChanged message found, that's ok in CI
+    }
+
+    #[test]
+    fn test_create_decode_sink_chain() {
+        gst::init().unwrap();
+        let pipeline = gst::Pipeline::with_name("decode-test");
+        let result = create_decode_sink_chain(&pipeline, "test-sink");
+        assert!(result.is_ok());
+        // decodebin should be in the pipeline
+        let decodebin = result.unwrap();
+        assert!(decodebin.parent().is_some());
+    }
+
+    #[test]
+    fn test_create_audio_sink_chain() {
+        gst::init().unwrap();
+        let pipeline = gst::Pipeline::with_name("audio-test");
+        let result = create_audio_sink_chain(&pipeline);
+        assert!(result.is_ok());
+        let decodebin = result.unwrap();
+        assert_eq!(decodebin.name().as_str(), "audio_decobin");
+        assert!(decodebin.parent().is_some());
+    }
+
+    #[test]
+    fn test_streamer_state_clone_and_debug() {
+        let state = StreamerState::Error("test".to_string());
+        let cloned = state.clone();
+        assert_eq!(state, cloned);
+        // Debug trait
+        let debug_str = format!("{:?}", StreamerState::Stopped);
+        assert!(debug_str.contains("Stopped"));
+    }
+
+    struct FailingPipeline;
+
+    impl PipelineFactory for FailingPipeline {
+        fn name(&self) -> &str { "failing" }
+        fn create_pipeline(&self) -> Result<gst::Pipeline> {
+            Err(anyhow::anyhow!("Pipeline creation failed"))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_streamer_with_failing_pipeline() {
+        let streamer = Streamer::new(FailingPipeline);
+        // Streamer::new succeeds (thread is spawned), but the thread will exit early
+        assert!(streamer.is_ok());
+        let streamer = streamer.unwrap();
+        // Give the thread time to fail
+        sleep(Duration::from_millis(200)).await;
+        // State remains Stopped since the thread exited before processing commands
+        assert_eq!(streamer.get_state(), StreamerState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn test_streamer_get_state_after_multiple_transitions() {
+        let streamer = Streamer::new(MockPipeline).unwrap();
+        assert_eq!(streamer.get_state(), StreamerState::Stopped);
+
+        streamer.start().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        assert_eq!(streamer.get_state(), StreamerState::Playing);
+
+        streamer.pause().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        assert_eq!(streamer.get_state(), StreamerState::Paused);
+
+        streamer.start().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        assert_eq!(streamer.get_state(), StreamerState::Playing);
+
+        streamer.stop().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+        assert_eq!(streamer.get_state(), StreamerState::Stopped);
+    }
 }
